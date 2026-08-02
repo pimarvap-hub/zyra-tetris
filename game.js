@@ -173,9 +173,260 @@
     },
   };
 
+  // ── Browser / device auto-detect ──────────
+  /** @type {ReturnType<typeof detectEnv>} */
+  let env = null;
+
+  function detectEnv() {
+    const vv = window.visualViewport;
+    const w = Math.round(vv?.width || window.innerWidth || document.documentElement.clientWidth || 360);
+    const h = Math.round(vv?.height || window.innerHeight || document.documentElement.clientHeight || 640);
+    const rawDpr = window.devicePixelRatio || 1;
+    // Cap DPR by device class later; raw stored for sprites
+    const coarse = matchMedia("(pointer: coarse)").matches;
+    const fine = matchMedia("(pointer: fine)").matches;
+    const hover = matchMedia("(hover: hover)").matches;
+    const noHover = matchMedia("(hover: none)").matches;
+    const touch =
+      ("ontouchstart" in window) ||
+      (navigator.maxTouchPoints || 0) > 0 ||
+      coarse;
+    const ua = navigator.userAgent || "";
+    const ios =
+      /iPad|iPhone|iPod/.test(ua) ||
+      (navigator.platform === "MacIntel" && (navigator.maxTouchPoints || 0) > 1);
+    const android = /Android/i.test(ua);
+    const safari = /Safari/i.test(ua) && !/Chrome|CriOS|Edg|OPR|Firefox/i.test(ua);
+    const chrome = /Chrome|CriOS/i.test(ua) && !/Edg|OPR/i.test(ua);
+    const standalone =
+      matchMedia("(display-mode: standalone)").matches ||
+      // iOS home-screen
+      Boolean(navigator.standalone);
+    const landscape = w > h;
+    const portrait = !landscape;
+    const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const narrow = w < 430;
+    const short = h < 700;
+    const veryShort = h < 580;
+
+    // Device tier: touch + size, not only UA
+    let device = "desktop";
+    if (touch && (w < 768 || (coarse && w < 1024 && noHover))) {
+      device = w >= 700 && !narrow ? "tablet" : "phone";
+    } else if (w < 700 && (touch || coarse)) {
+      device = "phone";
+    } else if (w < 1024 && touch) {
+      device = "tablet";
+    }
+
+    // Prefer touch UI if primary input is coarse / no hover
+    const preferTouchUI = device !== "desktop" || (touch && (coarse || noHover));
+    const preferKeys = fine && hover && device === "desktop";
+
+    // DPR budget: phones get up to 3, weak/low-end capped
+    let dprCap = 3;
+    if (device === "phone" && rawDpr >= 3) dprCap = 3;
+    else if (device === "desktop") dprCap = Math.min(2.5, rawDpr);
+    // Memory-ish heuristic: very high res screens still cap at 3
+    const dpr = Math.min(rawDpr, dprCap);
+
+    return {
+      w,
+      h,
+      rawDpr,
+      dpr,
+      touch,
+      coarse,
+      fine,
+      hover,
+      noHover,
+      ios,
+      android,
+      safari,
+      chrome,
+      standalone,
+      landscape,
+      portrait,
+      reducedMotion,
+      narrow,
+      short,
+      veryShort,
+      device,
+      preferTouchUI,
+      preferKeys,
+    };
+  }
+
+  function applyEnvToDom(e) {
+    const root = document.documentElement;
+    const body = document.body;
+    const classes = [
+      "is-" + e.device,
+      e.touch ? "is-touch" : "no-touch",
+      e.preferTouchUI ? "ui-touch" : "ui-keys",
+      e.landscape ? "orient-landscape" : "orient-portrait",
+      e.ios ? "is-ios" : "",
+      e.android ? "is-android" : "",
+      e.safari ? "is-safari" : "",
+      e.standalone ? "is-standalone" : "",
+      e.short ? "is-short" : "",
+      e.veryShort ? "is-very-short" : "",
+      e.narrow ? "is-narrow" : "",
+      e.reducedMotion ? "reduce-motion" : "",
+    ].filter(Boolean);
+
+    // strip previous adaptive classes
+    body.className = body.className
+      .split(/\s+/)
+      .filter((c) => !/^(is-|ui-|orient-|no-touch|reduce-motion)/.test(c))
+      .concat(classes)
+      .join(" ")
+      .trim();
+
+    root.style.setProperty("--vw", e.w + "px");
+    root.style.setProperty("--vh", e.h + "px");
+    root.style.setProperty("--dpr", String(e.dpr));
+    root.dataset.device = e.device;
+    root.dataset.orient = e.landscape ? "landscape" : "portrait";
+  }
+
+  /**
+   * Fit board + UI into real viewport (accounts for mobile browser chrome).
+   * Sets CSS vars used by styles.css
+   */
+  function computeLayout(e) {
+    const padX = e.device === "phone" ? (e.narrow ? 8 : 10) : 14;
+    const padY = e.device === "phone" ? 6 : 10;
+    // rough chrome: top stats + gaps + controls (if touch UI)
+    const topH = e.veryShort ? 40 : e.device === "phone" ? 46 : 52;
+    const gap = e.veryShort ? 4 : 8;
+
+    let sideW;
+    if (e.device === "phone") sideW = e.narrow ? 52 : e.landscape ? 56 : 58;
+    else if (e.device === "tablet") sideW = 72;
+    else sideW = 88;
+
+    let ctrlBlock = 0;
+    if (e.preferTouchUI) {
+      if (e.landscape && e.device === "phone") {
+        // side controls — width reserved separately
+        ctrlBlock = 0;
+      } else {
+        // portrait control pad height
+        const btn = e.veryShort ? 42 : e.short ? 48 : e.narrow ? 52 : 56;
+        const drop = e.veryShort ? 40 : 48;
+        const rows = 2;
+        const hint = e.veryShort ? 0 : 16;
+        ctrlBlock = btn * rows + drop + gap * 3 + hint + 4;
+      }
+    } else {
+      // minimal desktop pad or hidden — still leave a little room if controls shown compact
+      ctrlBlock = e.preferKeys ? 0 : 100;
+    }
+
+    const availW = e.w - padX * 2;
+    const availH = e.h - padY * 2 - (e.standalone ? 0 : 0);
+
+    // game screen usable height
+    let boardMaxH = availH - topH - gap - ctrlBlock;
+    let boardMaxW = availW - sideW * 2 - gap * 2;
+
+    if (e.landscape && e.device === "phone" && e.preferTouchUI) {
+      // board left/center, controls column on right (~120px)
+      const ctrlCol = e.veryShort ? 100 : 118;
+      boardMaxW = availW - sideW * 2 - gap * 2 - ctrlCol - gap;
+      boardMaxH = availH - topH - gap;
+    }
+
+    // Board is always 1:2 (width:height)
+    let boardW = Math.min(boardMaxW, boardMaxH / 2);
+    let boardH = boardW * 2;
+
+    // If height-limited, recompute from height
+    if (boardH > boardMaxH) {
+      boardH = boardMaxH;
+      boardW = boardH / 2;
+    }
+
+    // Clamp sensible bounds
+    const minW = e.device === "phone" ? 140 : 200;
+    const maxW =
+      e.device === "phone" ? (e.landscape ? 280 : 340) : e.device === "tablet" ? 360 : 400;
+    boardW = Math.max(minW, Math.min(maxW, boardW));
+    boardH = boardW * 2;
+
+    // Control button height from free space
+    let ctrlBtn = 52;
+    if (e.preferTouchUI) {
+      if (e.landscape && e.device === "phone") {
+        ctrlBtn = Math.max(40, Math.min(56, Math.floor((boardH - 24) / 6)));
+      } else {
+        const free = Math.max(0, availH - topH - gap - boardH - 8);
+        // 3 rows roughly
+        ctrlBtn = Math.max(40, Math.min(58, Math.floor((free - 20) / 3.2)));
+      }
+    }
+
+    const uiScale =
+      e.device === "phone" ? (e.narrow ? 0.92 : 1) : e.device === "tablet" ? 1.05 : 1.1;
+
+    return {
+      padX,
+      padY,
+      sideW,
+      boardW: Math.round(boardW),
+      boardH: Math.round(boardH),
+      ctrlBtn: Math.round(ctrlBtn),
+      topH,
+      uiScale,
+      ctrlCol: e.landscape && e.device === "phone" && e.preferTouchUI ? (e.veryShort ? 100 : 118) : 0,
+    };
+  }
+
+  function applyLayout(layout, e) {
+    const root = document.documentElement;
+    root.style.setProperty("--pad-x", layout.padX + "px");
+    root.style.setProperty("--pad-y", layout.padY + "px");
+    root.style.setProperty("--side-w", layout.sideW + "px");
+    root.style.setProperty("--board-w", layout.boardW + "px");
+    root.style.setProperty("--board-h", layout.boardH + "px");
+    root.style.setProperty("--ctrl-btn-h", layout.ctrlBtn + "px");
+    root.style.setProperty("--ctrl-drop-h", Math.round(layout.ctrlBtn * 0.92) + "px");
+    root.style.setProperty("--ui-scale", String(layout.uiScale));
+    root.style.setProperty("--ctrl-col-w", layout.ctrlCol + "px");
+    root.style.setProperty("--panel-canvas", Math.max(40, layout.sideW - 12) + "px");
+
+    // landscape phone game chrome
+    document.body.classList.toggle(
+      "layout-side-controls",
+      Boolean(layout.ctrlCol)
+    );
+  }
+
+  function adaptUI() {
+    env = detectEnv();
+    applyEnvToDom(env);
+    const layout = computeLayout(env);
+    applyLayout(layout, env);
+
+    // Start screen hints: touch vs keyboard
+    const hints = document.querySelector(".hint-keys");
+    if (hints) {
+      if (env.preferTouchUI) {
+        hints.innerHTML =
+          "<span>свайпы на поле</span><span>кнопки внизу</span><span>тап = поворот</span>";
+      } else {
+        hints.innerHTML =
+          "<span>← → двигать</span><span>↑ поворот</span><span>↓ ускорить</span><span>Space сброс</span><span>C hold</span>";
+      }
+    }
+
+    return { env, layout };
+  }
+
   // ── HiDPI canvas ──────────────────────────
   function setupCanvas(canvas, cssW, cssH) {
-    const ratio = Math.min(window.devicePixelRatio || 1, 3);
+    const ratio = Math.min((env && env.dpr) || window.devicePixelRatio || 1, 3);
     const w = Math.max(1, Math.round(cssW * ratio));
     const h = Math.max(1, Math.round(cssH * ratio));
     if (canvas.width !== w || canvas.height !== h) {
@@ -506,17 +757,30 @@
 
   // ── Drawing ───────────────────────────────
   function resizeBoard() {
+    adaptUI();
+
+    // Prefer computed CSS vars (stable) over rect race conditions
+    const rootStyle = getComputedStyle(document.documentElement);
+    const varW = parseFloat(rootStyle.getPropertyValue("--board-w")) || 0;
+    const varH = parseFloat(rootStyle.getPropertyValue("--board-h")) || 0;
     const rect = boardWrap.getBoundingClientRect();
-    boardCssW = rect.width || 300;
-    boardCssH = rect.height || 600;
+
+    boardCssW = varW || rect.width || 300;
+    boardCssH = varH || rect.height || boardCssW * 2;
+
+    // Force explicit pixel size so canvas matches layout exactly
+    boardWrap.style.width = boardCssW + "px";
+    boardWrap.style.height = boardCssH + "px";
+
     dpr = setupCanvas(boardCanvas, boardCssW, boardCssH);
     cellW = boardCssW / COLS;
     cellH = boardCssH / ROWS;
     rebuildCanSprites();
 
-    // side panels
-    const side = document.querySelector(".panel canvas");
-    const sideCss = side ? side.getBoundingClientRect().width || 72 : 72;
+    const sideCss =
+      parseFloat(rootStyle.getPropertyValue("--panel-canvas")) ||
+      document.querySelector(".panel canvas")?.getBoundingClientRect().width ||
+      64;
     setupCanvas(nextCanvas, sideCss, sideCss);
     setupCanvas(holdCanvas, sideCss, sideCss);
     if (nextPiece) drawSide(nctx, nextPiece);
@@ -1136,6 +1400,8 @@
 
   // ── Init ──────────────────────────────────
   async function init() {
+    // First paint: lock viewport units + device classes before UI shows
+    adaptUI();
     spawnBubbles();
     $("best-start").textContent = best;
     fillFlavorPreview();
@@ -1159,11 +1425,46 @@
     const onResize = () => {
       clearTimeout(resizeT);
       resizeT = setTimeout(() => {
+        adaptUI();
         if (!gameScreen.classList.contains("hidden")) resizeBoard();
-      }, 80);
+      }, 60);
     };
+
     window.addEventListener("resize", onResize);
-    window.addEventListener("orientationchange", () => setTimeout(onResize, 200));
+    window.addEventListener("orientationchange", () => {
+      // iOS fires early — wait for chrome settle
+      setTimeout(onResize, 120);
+      setTimeout(onResize, 320);
+    });
+
+    // Mobile browser URL bar show/hide
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", onResize);
+      window.visualViewport.addEventListener("scroll", onResize);
+    }
+
+    // Input capability can change (tablet with keyboard)
+    const mqTouch = matchMedia("(pointer: coarse)");
+    const mqHover = matchMedia("(hover: hover)");
+    const onMq = () => onResize();
+    if (mqTouch.addEventListener) {
+      mqTouch.addEventListener("change", onMq);
+      mqHover.addEventListener("change", onMq);
+    } else {
+      mqTouch.addListener(onMq);
+      mqHover.addListener(onMq);
+    }
+
+    // Prevent iOS rubber-band scroll while playing
+    document.body.addEventListener(
+      "touchmove",
+      (e) => {
+        if (running && !paused && e.target.closest?.("#game-screen")) {
+          if (!e.target.closest?.(".controls")) e.preventDefault();
+        }
+      },
+      { passive: false }
+    );
   }
 
   init();
