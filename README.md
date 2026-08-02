@@ -4,9 +4,7 @@
 
 ## Играть онлайн
 
-После включения GitHub Pages:
-
-**https://USERNAME.github.io/zyra-tetris/**
+**https://pimarvap-hub.github.io/zyra-tetris/**
 
 ## Локально
 
