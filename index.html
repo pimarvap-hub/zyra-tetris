@@ -22,15 +22,17 @@
     <!-- START SCREEN -->
     <section class="screen" id="start-screen">
       <div class="start-card">
-        <img class="brand-logo" src="assets/logo.png" alt="ZYRA" />
+        <img class="brand-logo" src="assets/logo.png" alt="ZYRA" width="140" height="auto" decoding="async" />
         <h1>ZYRA <span>TETRIS</span></h1>
         <p class="tagline">Собирай линии из ярких банок лимонада</p>
         <div class="flavor-row" id="flavor-preview"></div>
         <button class="btn btn-play" id="btn-start">ИГРАТЬ 🥤</button>
         <p class="hint-keys">
           <span>← → двигать</span>
-          <span>↑ / Space поворот</span>
+          <span>↑ поворот</span>
           <span>↓ ускорить</span>
+          <span>Space сброс</span>
+          <span>C hold</span>
         </p>
         <p class="best-start">Рекорд: <strong id="best-start">0</strong></p>
       </div>
@@ -39,7 +41,7 @@
     <!-- GAME SCREEN -->
     <section class="screen hidden" id="game-screen">
       <header class="game-top">
-        <img src="assets/logo.png" alt="ZYRA" class="mini-logo" />
+        <img src="assets/logo.png" alt="ZYRA" class="mini-logo" width="28" height="auto" decoding="async" />
         <div class="stat-pill">
           <span>Очки</span>
           <strong id="score">0</strong>
@@ -58,13 +60,13 @@
         <aside class="side side-left">
           <div class="panel">
             <h3>УДЕРЖ.</h3>
-            <canvas id="hold" width="96" height="96"></canvas>
+            <canvas id="hold" width="128" height="128"></canvas>
           </div>
-          <button class="btn btn-ghost" id="btn-pause" type="button">⏸</button>
+          <button class="btn btn-ghost" id="btn-pause" type="button" aria-label="Пауза">⏸</button>
         </aside>
 
         <div class="board-wrap">
-          <canvas id="board" width="300" height="600"></canvas>
+          <canvas id="board" width="360" height="720"></canvas>
           <div class="overlay hidden" id="pause-overlay">
             <p>ПАУЗА</p>
             <button class="btn btn-play btn-sm" id="btn-resume">Продолжить</button>
@@ -74,30 +76,36 @@
         <aside class="side side-right">
           <div class="panel">
             <h3>ДАЛЕЕ</h3>
-            <canvas id="next" width="96" height="96"></canvas>
+            <canvas id="next" width="128" height="128"></canvas>
           </div>
           <div class="panel flavor-tip" id="flavor-tip">
-            <img id="tip-img" src="assets/anar.png" alt="" />
+            <img id="tip-img" src="assets/anar.png" alt="" width="48" height="auto" decoding="async" />
             <span id="tip-name">Анар</span>
           </div>
         </aside>
       </div>
 
-      <!-- Mobile controls -->
+      <!-- Mobile / touch controls -->
       <div class="controls" id="controls">
-        <button type="button" data-act="hold" aria-label="Удержать">H</button>
-        <button type="button" data-act="left" aria-label="Влево">◀</button>
-        <button type="button" data-act="rotate" aria-label="Поворот">↻</button>
-        <button type="button" data-act="right" aria-label="Вправо">▶</button>
-        <button type="button" data-act="down" aria-label="Вниз">▼</button>
-        <button type="button" class="drop" data-act="drop" aria-label="Сброс">⬇ DROP</button>
+        <div class="ctrl-row ctrl-top">
+          <button type="button" class="ctrl hold" data-act="hold" aria-label="Удержать">HOLD</button>
+          <button type="button" class="ctrl rot" data-act="rotate-ccw" aria-label="Поворот влево">↺</button>
+          <button type="button" class="ctrl rot" data-act="rotate" aria-label="Поворот вправо">↻</button>
+        </div>
+        <div class="ctrl-row ctrl-mid">
+          <button type="button" class="ctrl dir" data-act="left" aria-label="Влево">◀</button>
+          <button type="button" class="ctrl dir" data-act="down" aria-label="Вниз">▼</button>
+          <button type="button" class="ctrl dir" data-act="right" aria-label="Вправо">▶</button>
+        </div>
+        <button type="button" class="ctrl drop" data-act="drop" aria-label="Сброс вниз">⬇ DROP</button>
+        <p class="swipe-hint">свайп: ←→ двигать · ↓ вниз · ↑ сброс · тап = поворот</p>
       </div>
     </section>
 
     <!-- GAME OVER -->
     <section class="screen hidden" id="over-screen">
       <div class="start-card over-card">
-        <img class="brand-logo sm" src="assets/logo.png" alt="ZYRA" />
+        <img class="brand-logo sm" src="assets/logo.png" alt="ZYRA" width="100" height="auto" decoding="async" />
         <h2>ИГРА ОКОНЧЕНА</h2>
         <p class="final-score">Очки: <strong id="final-score">0</strong></p>
         <p class="final-meta">Линии: <span id="final-lines">0</span> · Уровень: <span id="final-level">1</span></p>

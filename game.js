@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════
-   ZYRA TETRIS — cans as blocks
+   ZYRA TETRIS — cans as blocks (HQ + controls)
    ═══════════════════════════════════════════ */
 
 (() => {
@@ -15,10 +15,8 @@
     { id: "zhidekti", name: "Жидекті", color: "#c9184a", src: "assets/zhidekti.png" },
   ];
 
-  // 7 classic pieces → flavor index (6 flavors, I reuses anar glow style)
   const PIECE_FLAVOR = [0, 1, 2, 3, 4, 5, 0]; // I O T S Z J L
 
-  // Tetromino shapes (4x4 matrices, rotations)
   const SHAPES = {
     I: [
       [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
@@ -69,14 +67,19 @@
   const ROWS = 20;
   const STORAGE_BEST = "zyra_tetris_best";
 
+  // Tetris-like DAS / ARR (ms)
+  const DAS = 140;
+  const ARR = 38;
+  const SOFT_DROP_MS = 42;
+
   // ── DOM ───────────────────────────────────
   const $ = (id) => document.getElementById(id);
   const boardCanvas = $("board");
   const nextCanvas = $("next");
   const holdCanvas = $("hold");
-  const ctx = boardCanvas.getContext("2d");
-  const nctx = nextCanvas.getContext("2d");
-  const hctx = holdCanvas.getContext("2d");
+  const ctx = boardCanvas.getContext("2d", { alpha: true, desynchronized: true });
+  const nctx = nextCanvas.getContext("2d", { alpha: true });
+  const hctx = holdCanvas.getContext("2d", { alpha: true });
 
   const startScreen = $("start-screen");
   const gameScreen = $("game-screen");
@@ -86,6 +89,8 @@
 
   // ── State ─────────────────────────────────
   let images = {};
+  /** Pre-rendered can sprites at current cell size (crisp) */
+  let canSprites = {};
   let grid = [];
   let current = null;
   let nextPiece = null;
@@ -108,8 +113,19 @@
   let cellW = 30;
   let cellH = 30;
   let animId = 0;
+  let dpr = 1;
+  let boardCssW = 300;
+  let boardCssH = 600;
 
-  // ── Audio (WebAudio beeps) ────────────────
+  // Input state
+  let softDropHeld = false;
+  let lastSoftDrop = 0;
+  let dasDir = 0; // -1 left, 1 right, 0 none
+  let dasArmedAt = 0;
+  let dasRepeating = false;
+  let lastArr = 0;
+
+  // ── Audio ─────────────────────────────────
   let audioCtx = null;
   function ensureAudio() {
     if (!audioCtx) {
@@ -136,34 +152,58 @@
   }
 
   const sfx = {
-    move: () => beep(220, 0.04, "square", 0.03),
-    rotate: () => beep(330, 0.05, "triangle", 0.04),
-    drop: () => beep(120, 0.08, "square", 0.05),
-    lock: () => beep(180, 0.07, "triangle", 0.04),
+    move: () => beep(220, 0.035, "square", 0.025),
+    rotate: () => beep(340, 0.045, "triangle", 0.035),
+    drop: () => beep(110, 0.07, "square", 0.04),
+    lock: () => beep(180, 0.06, "triangle", 0.035),
     clear: () => {
-      beep(440, 0.08, "sine", 0.05);
-      setTimeout(() => beep(660, 0.1, "sine", 0.05), 60);
-      setTimeout(() => beep(880, 0.12, "sine", 0.05), 120);
+      beep(440, 0.07, "sine", 0.045);
+      setTimeout(() => beep(660, 0.09, "sine", 0.045), 55);
+      setTimeout(() => beep(880, 0.11, "sine", 0.045), 110);
     },
     over: () => {
-      beep(300, 0.15, "sawtooth", 0.04);
-      setTimeout(() => beep(200, 0.2, "sawtooth", 0.04), 120);
-      setTimeout(() => beep(120, 0.3, "sawtooth", 0.04), 260);
+      beep(300, 0.14, "sawtooth", 0.035);
+      setTimeout(() => beep(200, 0.18, "sawtooth", 0.035), 110);
+      setTimeout(() => beep(120, 0.28, "sawtooth", 0.035), 240);
     },
     start: () => {
-      beep(392, 0.08, "sine", 0.05);
-      setTimeout(() => beep(523, 0.1, "sine", 0.05), 80);
-      setTimeout(() => beep(659, 0.14, "sine", 0.05), 160);
+      beep(392, 0.07, "sine", 0.045);
+      setTimeout(() => beep(523, 0.09, "sine", 0.045), 70);
+      setTimeout(() => beep(659, 0.12, "sine", 0.045), 140);
     },
   };
 
-  // ── Load images ───────────────────────────
+  // ── HiDPI canvas ──────────────────────────
+  function setupCanvas(canvas, cssW, cssH) {
+    const ratio = Math.min(window.devicePixelRatio || 1, 3);
+    const w = Math.max(1, Math.round(cssW * ratio));
+    const h = Math.max(1, Math.round(cssH * ratio));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    canvas.style.width = cssW + "px";
+    canvas.style.height = cssH + "px";
+    const c = canvas.getContext("2d");
+    c.setTransform(ratio, 0, 0, ratio, 0, 0);
+    c.imageSmoothingEnabled = true;
+    if ("imageSmoothingQuality" in c) c.imageSmoothingQuality = "high";
+    return ratio;
+  }
+
+  function tuneCtx(c) {
+    c.imageSmoothingEnabled = true;
+    if ("imageSmoothingQuality" in c) c.imageSmoothingQuality = "high";
+  }
+
+  // ── Load + pre-render cans ────────────────
   function loadImages() {
     return Promise.all(
       FLAVORS.map(
         (f) =>
           new Promise((resolve, reject) => {
             const img = new Image();
+            img.decoding = "async";
             img.onload = () => {
               images[f.id] = img;
               resolve();
@@ -175,23 +215,75 @@
     );
   }
 
-  // ── Bubbles background ────────────────────
+  /** Bake each can into a sharp offscreen sprite for current cell size */
+  function rebuildCanSprites() {
+    canSprites = {};
+    // render at 2x cell for sharpness when scaled slightly
+    const px = Math.max(48, Math.round(Math.min(cellW, cellH) * dpr * 1.25));
+    FLAVORS.forEach((f) => {
+      const img = images[f.id];
+      if (!img) return;
+      const off = document.createElement("canvas");
+      off.width = px;
+      off.height = px;
+      const oc = off.getContext("2d");
+      oc.imageSmoothingEnabled = true;
+      if ("imageSmoothingQuality" in oc) oc.imageSmoothingQuality = "high";
+
+      // soft colored plate behind can (no canvas shadowBlur — keeps edges sharp)
+      const pad = px * 0.06;
+      const ir = img.naturalWidth / img.naturalHeight || img.width / img.height;
+      let rw = px - pad * 2;
+      let rh = rw / ir;
+      if (rh > px - pad * 2) {
+        rh = px - pad * 2;
+        rw = rh * ir;
+      }
+      const dx = (px - rw) / 2;
+      const dy = (px - rh) / 2;
+
+      // subtle radial tint
+      const g = oc.createRadialGradient(px / 2, px / 2, px * 0.1, px / 2, px / 2, px * 0.55);
+      g.addColorStop(0, hexAlpha(f.color, 0.35));
+      g.addColorStop(1, hexAlpha(f.color, 0));
+      oc.fillStyle = g;
+      oc.beginPath();
+      oc.roundRect
+        ? oc.roundRect(pad * 0.5, pad * 0.5, px - pad, px - pad, px * 0.18)
+        : oc.rect(pad * 0.5, pad * 0.5, px - pad, px - pad);
+      oc.fill();
+
+      oc.drawImage(img, dx, dy, rw, rh);
+      canSprites[f.id] = off;
+    });
+  }
+
+  function hexAlpha(hex, a) {
+    const h = hex.replace("#", "");
+    const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+    const n = parseInt(full, 16);
+    const r = (n >> 16) & 255;
+    const g = (n >> 8) & 255;
+    const b = n & 255;
+    return `rgba(${r},${g},${b},${a})`;
+  }
+
+  // ── Bubbles ───────────────────────────────
   function spawnBubbles() {
     const host = $("bubbles");
     host.innerHTML = "";
-    for (let i = 0; i < 22; i++) {
+    for (let i = 0; i < 18; i++) {
       const s = document.createElement("span");
-      const size = 6 + Math.random() * 18;
+      const size = 6 + Math.random() * 16;
       s.style.width = size + "px";
       s.style.height = size + "px";
       s.style.left = Math.random() * 100 + "%";
-      s.style.animationDuration = 8 + Math.random() * 14 + "s";
+      s.style.animationDuration = 9 + Math.random() * 14 + "s";
       s.style.animationDelay = Math.random() * 10 + "s";
       host.appendChild(s);
     }
   }
 
-  // ── Flavor preview on start ───────────────
   function fillFlavorPreview() {
     const row = $("flavor-preview");
     row.innerHTML = "";
@@ -199,11 +291,13 @@
       const img = document.createElement("img");
       img.src = f.src;
       img.alt = f.name;
+      img.decoding = "async";
+      img.loading = "eager";
       row.appendChild(img);
     });
   }
 
-  // ── Bag randomizer ────────────────────────
+  // ── Bag ───────────────────────────────────
   function refillBag() {
     bag = PIECE_TYPES.slice();
     for (let i = bag.length - 1; i > 0; i--) {
@@ -216,21 +310,14 @@
     if (!bag.length) refillBag();
     const type = bag.pop();
     const typeIndex = PIECE_TYPES.indexOf(type);
-    const flavorIdx = PIECE_FLAVOR[typeIndex];
-    return {
-      type,
-      rot: 0,
-      x: 3,
-      y: 0,
-      flavor: flavorIdx,
-    };
+    return { type, rot: 0, x: 3, y: 0, flavor: PIECE_FLAVOR[typeIndex] };
   }
 
   function shapeOf(piece) {
     return SHAPES[piece.type][piece.rot];
   }
 
-  // ── Grid helpers ──────────────────────────
+  // ── Grid ──────────────────────────────────
   function emptyGrid() {
     return Array.from({ length: ROWS }, () => Array(COLS).fill(null));
   }
@@ -260,9 +347,7 @@
           endGame();
           return;
         }
-        if (y < ROWS && x >= 0 && x < COLS) {
-          grid[y][x] = current.flavor;
-        }
+        if (y < ROWS && x >= 0 && x < COLS) grid[y][x] = current.flavor;
       }
     }
     sfx.lock();
@@ -279,31 +364,29 @@
     if (!full.length) return;
 
     flashRows = full.slice();
-    flashTimer = 220;
+    flashTimer = 200;
     boardWrap.classList.add("flash");
-    setTimeout(() => boardWrap.classList.remove("flash"), 350);
+    setTimeout(() => boardWrap.classList.remove("flash"), 320);
     sfx.clear();
 
-    // particles
     full.forEach((y) => {
       for (let x = 0; x < COLS; x++) {
         const flavor = grid[y][x];
         const col = FLAVORS[flavor]?.color || "#fff";
-        for (let i = 0; i < 4; i++) {
+        for (let i = 0; i < 5; i++) {
           particles.push({
             x: (x + 0.5) * cellW,
             y: (y + 0.5) * cellH,
-            vx: (Math.random() - 0.5) * 6,
-            vy: (Math.random() - 0.8) * 5,
+            vx: (Math.random() - 0.5) * 7,
+            vy: (Math.random() - 0.85) * 6,
             life: 1,
             color: col,
-            size: 3 + Math.random() * 4,
+            size: 2.5 + Math.random() * 3.5,
           });
         }
       }
     });
 
-    // remove after flash
     setTimeout(() => {
       const keep = grid.filter((_, y) => !full.includes(y));
       while (keep.length < ROWS) keep.unshift(Array(COLS).fill(null));
@@ -311,16 +394,15 @@
       flashRows = [];
 
       const n = full.length;
-      const points = [0, 100, 300, 500, 800][n] * level;
-      score += points;
+      score += [0, 100, 300, 500, 800][n] * level;
       lines += n;
       const newLevel = Math.floor(lines / 8) + 1;
       if (newLevel !== level) {
         level = newLevel;
-        dropInterval = Math.max(100, 800 - (level - 1) * 70);
+        dropInterval = Math.max(90, 800 - (level - 1) * 70);
       }
       updateHUD();
-    }, 200);
+    }, 180);
   }
 
   function spawnPiece() {
@@ -348,33 +430,46 @@
   }
 
   function softDrop() {
-    if (!current || paused || gameOver) return;
+    if (!current || paused || gameOver) return false;
     if (!collides(current, 0, 1)) {
       current.y++;
       score += 1;
       updateHUD();
-    } else {
-      lockPiece();
+      return true;
     }
+    lockPiece();
+    return false;
   }
 
   function move(dx) {
-    if (!current || paused || gameOver) return;
+    if (!current || paused || gameOver) return false;
     if (!collides(current, dx, 0)) {
       current.x += dx;
       sfx.move();
+      return true;
     }
+    return false;
   }
 
   function rotate(dir = 1) {
     if (!current || paused || gameOver) return;
     const nextRot = (current.rot + dir + 4) % 4;
-    // wall kicks
-    const kicks = [0, -1, 1, -2, 2];
-    for (const k of kicks) {
-      if (!collides(current, k, 0, nextRot)) {
+    // SRS-lite wall kicks (+ up kick)
+    const kicks = [
+      [0, 0],
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [-2, 0],
+      [2, 0],
+      [-1, -1],
+      [1, -1],
+    ];
+    for (const [kx, ky] of kicks) {
+      if (!collides(current, kx, ky, nextRot)) {
         current.rot = nextRot;
-        current.x += k;
+        current.x += kx;
+        current.y += ky;
         sfx.rotate();
         return;
       }
@@ -402,7 +497,6 @@
     sfx.rotate();
   }
 
-  // ── Ghost piece ───────────────────────────
   function ghostY() {
     if (!current) return 0;
     let gy = 0;
@@ -413,41 +507,44 @@
   // ── Drawing ───────────────────────────────
   function resizeBoard() {
     const rect = boardWrap.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const cssW = rect.width;
-    const cssH = rect.height;
-    boardCanvas.width = Math.floor(cssW * dpr);
-    boardCanvas.height = Math.floor(cssH * dpr);
-    boardCanvas.style.width = cssW + "px";
-    boardCanvas.style.height = cssH + "px";
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    cellW = cssW / COLS;
-    cellH = cssH / ROWS;
+    boardCssW = rect.width || 300;
+    boardCssH = rect.height || 600;
+    dpr = setupCanvas(boardCanvas, boardCssW, boardCssH);
+    cellW = boardCssW / COLS;
+    cellH = boardCssH / ROWS;
+    rebuildCanSprites();
+
+    // side panels
+    const side = document.querySelector(".panel canvas");
+    const sideCss = side ? side.getBoundingClientRect().width || 72 : 72;
+    setupCanvas(nextCanvas, sideCss, sideCss);
+    setupCanvas(holdCanvas, sideCss, sideCss);
+    if (nextPiece) drawSide(nctx, nextPiece);
+    drawSide(hctx, holdPiece);
   }
 
-  function drawCan(c, img, x, y, w, h, alpha = 1, glow = null) {
-    if (!img) return;
+  function drawCanSprite(c, flavorId, x, y, w, h, alpha = 1) {
+    const sprite = canSprites[flavorId];
+    const img = images[flavorId];
+    if (!sprite && !img) return;
     c.save();
     c.globalAlpha = alpha;
-    if (glow) {
-      c.shadowColor = glow;
-      c.shadowBlur = 12;
+    tuneCtx(c);
+    const padX = w * 0.04;
+    const padY = h * 0.03;
+    if (sprite) {
+      c.drawImage(sprite, x + padX, y + padY, w - padX * 2, h - padY * 2);
+    } else {
+      // fallback raw image
+      const ir = img.width / img.height;
+      let rw = w - padX * 2;
+      let rh = rw / ir;
+      if (rh > h - padY * 2) {
+        rh = h - padY * 2;
+        rw = rh * ir;
+      }
+      c.drawImage(img, x + (w - rw) / 2, y + (h - rh) / 2, rw, rh);
     }
-    // fit full can into cell with small padding
-    const padX = w * 0.08;
-    const padY = h * 0.04;
-    const dw = w - padX * 2;
-    const dh = h - padY * 2;
-    const ir = img.width / img.height;
-    let rw = dw;
-    let rh = rw / ir;
-    if (rh > dh) {
-      rh = dh;
-      rw = rh * ir;
-    }
-    const dx = x + (w - rw) / 2;
-    const dy = y + (h - rh) / 2;
-    c.drawImage(img, dx, dy, rw, rh);
     c.restore();
   }
 
@@ -455,65 +552,65 @@
     c.save();
     c.globalAlpha = alpha;
     c.fillStyle = color;
-    const r = Math.min(w, h) * 0.18;
+    const r = Math.min(w, h) * 0.16;
     roundRect(c, x + 1, y + 1, w - 2, h - 2, r);
     c.fill();
     c.restore();
   }
 
   function roundRect(c, x, y, w, h, r) {
+    const rr = Math.min(r, w / 2, h / 2);
     c.beginPath();
-    c.moveTo(x + r, y);
-    c.arcTo(x + w, y, x + w, y + h, r);
-    c.arcTo(x + w, y + h, x, y + h, r);
-    c.arcTo(x, y + h, x, y, r);
-    c.arcTo(x, y, x + w, y, r);
+    c.moveTo(x + rr, y);
+    c.arcTo(x + w, y, x + w, y + h, rr);
+    c.arcTo(x + w, y + h, x, y + h, rr);
+    c.arcTo(x, y + h, x, y, rr);
+    c.arcTo(x, y, x + w, y, rr);
     c.closePath();
   }
 
   function drawBoard() {
-    const W = boardCanvas.clientWidth;
-    const H = boardCanvas.clientHeight;
+    const W = boardCssW;
+    const H = boardCssH;
     ctx.clearRect(0, 0, W, H);
+    tuneCtx(ctx);
 
-    // subtle grid
-    ctx.strokeStyle = "rgba(255,255,255,0.04)";
-    ctx.lineWidth = 1;
+    // board fill
+    ctx.fillStyle = "rgba(8,4,12,0.35)";
+    ctx.fillRect(0, 0, W, H);
+
+    // crisp grid
+    ctx.strokeStyle = "rgba(255,255,255,0.06)";
+    ctx.lineWidth = 1 / dpr;
     for (let x = 0; x <= COLS; x++) {
       ctx.beginPath();
-      ctx.moveTo(x * cellW, 0);
-      ctx.lineTo(x * cellW, H);
+      ctx.moveTo(Math.round(x * cellW) + 0.5 / dpr, 0);
+      ctx.lineTo(Math.round(x * cellW) + 0.5 / dpr, H);
       ctx.stroke();
     }
     for (let y = 0; y <= ROWS; y++) {
       ctx.beginPath();
-      ctx.moveTo(0, y * cellH);
-      ctx.lineTo(W, y * cellH);
+      ctx.moveTo(0, Math.round(y * cellH) + 0.5 / dpr);
+      ctx.lineTo(W, Math.round(y * cellH) + 0.5 / dpr);
       ctx.stroke();
     }
 
-    // locked cells
+    // locked
     for (let y = 0; y < ROWS; y++) {
       for (let x = 0; x < COLS; x++) {
         const f = grid[y][x];
         if (f === null) continue;
         const flavor = FLAVORS[f];
         const flashing = flashRows.includes(y);
-        drawCellBg(ctx, x * cellW, y * cellH, cellW, cellH, flavor.color, flashing ? 0.55 : 0.18);
-        drawCan(
-          ctx,
-          images[flavor.id],
-          x * cellW,
-          y * cellH,
-          cellW,
-          cellH,
-          flashing ? 0.4 + 0.6 * Math.abs(Math.sin(performance.now() / 40)) : 1,
-          flavor.color
-        );
+        const pulse = flashing
+          ? 0.45 + 0.55 * Math.abs(Math.sin(performance.now() / 45))
+          : 1;
+        drawCellBg(ctx, x * cellW, y * cellH, cellW, cellH, flavor.color, flashing ? 0.5 : 0.14);
+        drawCanSprite(ctx, flavor.id, x * cellW, y * cellH, cellW, cellH, pulse);
       }
     }
 
-    // ghost
+    // ghost (outline only — cleaner)
     if (current && !gameOver) {
       const gy = ghostY();
       const shape = shapeOf(current);
@@ -524,21 +621,27 @@
           const x = current.x + c;
           const y = gy + r;
           if (y < 0) continue;
-          drawCan(
+          drawCanSprite(ctx, flavor.id, x * cellW, y * cellH, cellW, cellH, 0.2);
+          // dashed cell outline
+          ctx.save();
+          ctx.strokeStyle = hexAlpha(flavor.color, 0.55);
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([3, 3]);
+          roundRect(
             ctx,
-            images[flavor.id],
-            x * cellW,
-            y * cellH,
-            cellW,
-            cellH,
-            0.22,
-            null
+            x * cellW + 2,
+            y * cellH + 2,
+            cellW - 4,
+            cellH - 4,
+            Math.min(cellW, cellH) * 0.14
           );
+          ctx.stroke();
+          ctx.restore();
         }
       }
     }
 
-    // active piece
+    // active
     if (current && !gameOver) {
       const shape = shapeOf(current);
       const flavor = FLAVORS[current.flavor];
@@ -548,17 +651,8 @@
           const x = current.x + c;
           const y = current.y + r;
           if (y < 0) continue;
-          drawCellBg(ctx, x * cellW, y * cellH, cellW, cellH, flavor.color, 0.28);
-          drawCan(
-            ctx,
-            images[flavor.id],
-            x * cellW,
-            y * cellH,
-            cellW,
-            cellH,
-            1,
-            flavor.color
-          );
+          drawCellBg(ctx, x * cellW, y * cellH, cellW, cellH, flavor.color, 0.22);
+          drawCanSprite(ctx, flavor.id, x * cellW, y * cellH, cellW, cellH, 1);
         }
       }
     }
@@ -568,8 +662,8 @@
     particles.forEach((p) => {
       p.x += p.vx;
       p.y += p.vy;
-      p.vy += 0.15;
-      p.life -= 0.025;
+      p.vy += 0.16;
+      p.life -= 0.028;
       ctx.save();
       ctx.globalAlpha = Math.max(0, p.life);
       ctx.fillStyle = p.color;
@@ -581,15 +675,25 @@
   }
 
   function drawSide(c, piece) {
-    const W = c.canvas.width;
-    const H = c.canvas.height;
+    const canvas = c.canvas;
+    // work in CSS pixels via current transform from setupCanvas
+    const css = parseFloat(canvas.style.width) || canvas.width / dpr;
+    const W = css;
+    const H = css;
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    // re-apply dpr for this canvas
+    const ratio = canvas.width / Math.max(1, parseFloat(canvas.style.width) || canvas.width);
+    c.setTransform(ratio, 0, 0, ratio, 0, 0);
     c.clearRect(0, 0, W, H);
+    tuneCtx(c);
     if (!piece) return;
+
     const shape = SHAPES[piece.type][0];
     const flavor = FLAVORS[piece.flavor];
-    const img = images[flavor.id];
-    // bounding box of shape
-    let minR = 4, maxR = -1, minC = 4, maxC = -1;
+    let minR = 4,
+      maxR = -1,
+      minC = 4,
+      maxC = -1;
     for (let r = 0; r < 4; r++) {
       for (let col = 0; col < 4; col++) {
         if (shape[r][col]) {
@@ -602,7 +706,7 @@
     }
     const bw = maxC - minC + 1;
     const bh = maxR - minR + 1;
-    const cell = Math.min(W / (bw + 0.6), H / (bh + 0.6));
+    const cell = Math.min(W / (bw + 0.5), H / (bh + 0.5));
     const ox = (W - bw * cell) / 2;
     const oy = (H - bh * cell) / 2;
     for (let r = 0; r < 4; r++) {
@@ -610,7 +714,7 @@
         if (!shape[r][col]) continue;
         const x = ox + (col - minC) * cell;
         const y = oy + (r - minR) * cell;
-        drawCan(c, img, x, y, cell, cell, 1, flavor.color);
+        drawCanSprite(c, flavor.id, x, y, cell, cell, 1);
       }
     }
   }
@@ -628,22 +732,64 @@
     $("lines").textContent = lines;
   }
 
-  // ── Game loop ─────────────────────────────
+  // ── Input helpers (DAS) ───────────────────
+  function startDas(dir) {
+    dasDir = dir;
+    dasArmedAt = performance.now();
+    dasRepeating = false;
+    lastArr = 0;
+    move(dir);
+  }
+
+  function stopDas(dir) {
+    if (dasDir === dir) {
+      dasDir = 0;
+      dasRepeating = false;
+    }
+  }
+
+  function processHeldInput(ts) {
+    if (paused || gameOver || !running || !current) return;
+
+    // soft drop hold
+    if (softDropHeld) {
+      if (ts - lastSoftDrop >= SOFT_DROP_MS) {
+        softDrop();
+        lastSoftDrop = ts;
+        lastDrop = ts; // reset gravity while soft-dropping
+      }
+    }
+
+    // DAS / ARR horizontal
+    if (dasDir !== 0) {
+      const held = ts - dasArmedAt;
+      if (!dasRepeating) {
+        if (held >= DAS) {
+          dasRepeating = true;
+          lastArr = ts;
+          move(dasDir);
+        }
+      } else if (ts - lastArr >= ARR) {
+        lastArr = ts;
+        move(dasDir);
+      }
+    }
+  }
+
+  // ── Loop ──────────────────────────────────
   function loop(ts) {
     if (!running) return;
     if (!lastFrame) lastFrame = ts;
-    const dt = ts - lastFrame;
     lastFrame = ts;
 
     if (!paused && !gameOver && current) {
+      processHeldInput(ts);
+
       if (flashTimer > 0) {
-        flashTimer -= dt;
-      } else if (ts - lastDrop >= dropInterval) {
-        if (!collides(current, 0, 1)) {
-          current.y++;
-        } else {
-          lockPiece();
-        }
+        flashTimer -= 16;
+      } else if (!softDropHeld && ts - lastDrop >= dropInterval) {
+        if (!collides(current, 0, 1)) current.y++;
+        else lockPiece();
         lastDrop = ts;
       }
     }
@@ -677,15 +823,21 @@
     flashRows = [];
     gameOver = false;
     paused = false;
+    softDropHeld = false;
+    dasDir = 0;
     pauseOverlay.classList.add("hidden");
     running = true;
     lastDrop = performance.now();
     lastFrame = 0;
+    lastSoftDrop = 0;
     show(gameScreen);
-    resizeBoard();
-    spawnPiece();
-    drawSide(hctx, null);
-    updateHUD();
+    // layout after visible
+    requestAnimationFrame(() => {
+      resizeBoard();
+      spawnPiece();
+      drawSide(hctx, null);
+      updateHUD();
+    });
     cancelAnimationFrame(animId);
     animId = requestAnimationFrame(loop);
   }
@@ -694,6 +846,8 @@
     if (gameOver) return;
     gameOver = true;
     running = false;
+    dasDir = 0;
+    softDropHeld = false;
     sfx.over();
     if (score > best) {
       best = score;
@@ -704,21 +858,24 @@
     $("final-level").textContent = level;
     $("best-over").textContent = best;
     $("best-start").textContent = best;
-    setTimeout(() => show(overScreen), 400);
+    setTimeout(() => show(overScreen), 350);
   }
 
   function togglePause() {
-    if (gameOver || startScreen.classList.contains("hidden") === false) return;
-    if (!gameScreen.classList.contains("hidden") === false) return;
+    if (gameOver) return;
+    if (gameScreen.classList.contains("hidden")) return;
     paused = !paused;
     pauseOverlay.classList.toggle("hidden", !paused);
     if (!paused) {
       lastDrop = performance.now();
       lastFrame = 0;
+      lastSoftDrop = performance.now();
+    } else {
+      dasDir = 0;
+      softDropHeld = false;
     }
   }
 
-  // ── Share ─────────────────────────────────
   async function shareGame() {
     const url = location.href;
     const text = `Я набрал(а) ${score} очков в ZYRA Tetris! 🥤 Попробуй обыграть:`;
@@ -749,16 +906,25 @@
     el._t = setTimeout(() => el.classList.remove("show"), 2400);
   }
 
-  // ── Input ─────────────────────────────────
-  const keys = {};
-  let softDropHeld = false;
-
+  // ── Keyboard ──────────────────────────────
   window.addEventListener("keydown", (e) => {
-    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(e.key)) {
-      e.preventDefault();
+    const block = [
+      "ArrowUp",
+      "ArrowDown",
+      "ArrowLeft",
+      "ArrowRight",
+      " ",
+      "Spacebar",
+    ];
+    if (block.includes(e.key) || e.code === "Space") e.preventDefault();
+
+    if (e.repeat) {
+      // allow native repeat only for soft drop feel; DAS handles L/R
+      if (e.code === "ArrowDown" || e.code === "KeyS") {
+        if (!paused && running && !gameOver) softDrop();
+      }
+      return;
     }
-    if (keys[e.code]) return;
-    keys[e.code] = true;
 
     if (e.code === "KeyP" || e.code === "Escape") {
       togglePause();
@@ -769,15 +935,16 @@
     switch (e.code) {
       case "ArrowLeft":
       case "KeyA":
-        move(-1);
+        startDas(-1);
         break;
       case "ArrowRight":
       case "KeyD":
-        move(1);
+        startDas(1);
         break;
       case "ArrowDown":
       case "KeyS":
         softDropHeld = true;
+        lastSoftDrop = 0;
         softDrop();
         break;
       case "ArrowUp":
@@ -786,6 +953,8 @@
         rotate(1);
         break;
       case "KeyZ":
+      case "ControlLeft":
+      case "ControlRight":
         rotate(-1);
         break;
       case "Space":
@@ -800,17 +969,34 @@
   });
 
   window.addEventListener("keyup", (e) => {
-    keys[e.code] = false;
-    if (e.code === "ArrowDown" || e.code === "KeyS") softDropHeld = false;
+    switch (e.code) {
+      case "ArrowLeft":
+      case "KeyA":
+        stopDas(-1);
+        break;
+      case "ArrowRight":
+      case "KeyD":
+        stopDas(1);
+        break;
+      case "ArrowDown":
+      case "KeyS":
+        softDropHeld = false;
+        break;
+    }
   });
 
-  // touch / buttons
+  window.addEventListener("blur", () => {
+    dasDir = 0;
+    softDropHeld = false;
+  });
+
+  // ── Touch / buttons ───────────────────────
   function bindControls() {
     const controls = $("controls");
     let holdTimer = null;
     let repeatTimer = null;
 
-    function act(action) {
+    function act(action, isRepeat = false) {
       ensureAudio();
       if (paused || gameOver || !running) return;
       switch (action) {
@@ -824,75 +1010,128 @@
           softDrop();
           break;
         case "rotate":
-          rotate(1);
+          if (!isRepeat) rotate(1);
+          break;
+        case "rotate-ccw":
+          if (!isRepeat) rotate(-1);
           break;
         case "drop":
-          hardDrop();
+          if (!isRepeat) hardDrop();
           break;
         case "hold":
-          hold();
+          if (!isRepeat) hold();
           break;
       }
     }
 
     controls.querySelectorAll("button").forEach((btn) => {
       const action = btn.dataset.act;
+      const repeatable = action === "left" || action === "right" || action === "down";
+
       const start = (e) => {
         e.preventDefault();
-        act(action);
-        if (action === "left" || action === "right" || action === "down") {
+        try {
+          btn.setPointerCapture(e.pointerId);
+        } catch (_) {}
+        btn.classList.add("pressed");
+        act(action, false);
+        if (repeatable) {
           clearTimeout(holdTimer);
           clearInterval(repeatTimer);
+          const interval = action === "down" ? SOFT_DROP_MS : ARR;
           holdTimer = setTimeout(() => {
-            repeatTimer = setInterval(() => act(action), action === "down" ? 50 : 80);
-          }, 220);
+            repeatTimer = setInterval(() => act(action, true), interval);
+          }, DAS);
         }
       };
-      const end = () => {
+      const end = (e) => {
+        btn.classList.remove("pressed");
         clearTimeout(holdTimer);
         clearInterval(repeatTimer);
+        try {
+          if (e && e.pointerId != null) btn.releasePointerCapture(e.pointerId);
+        } catch (_) {}
       };
       btn.addEventListener("pointerdown", start);
       btn.addEventListener("pointerup", end);
       btn.addEventListener("pointerleave", end);
       btn.addEventListener("pointercancel", end);
+      btn.addEventListener("contextmenu", (e) => e.preventDefault());
     });
 
-    // swipe on board
-    let sx = 0, sy = 0, moved = false;
+    // Swipes on board
+    let sx = 0,
+      sy = 0,
+      lx = 0,
+      ly = 0,
+      moved = false,
+      startT = 0;
+
+    const onStart = (x, y) => {
+      sx = lx = x;
+      sy = ly = y;
+      moved = false;
+      startT = performance.now();
+    };
+
+    const onMove = (x, y) => {
+      if (paused || gameOver || !running) return;
+      const dx = x - lx;
+      const dy = y - ly;
+      const cellPx = Math.max(22, cellW * 0.85);
+
+      if (Math.abs(dx) >= cellPx && Math.abs(dx) > Math.abs(dy) * 1.1) {
+        move(dx > 0 ? 1 : -1);
+        lx = x;
+        moved = true;
+      } else if (dy >= cellPx * 0.7 && Math.abs(dy) > Math.abs(dx)) {
+        softDrop();
+        ly = y;
+        moved = true;
+      } else if (dy <= -cellPx * 1.2 && Math.abs(dy) > Math.abs(dx)) {
+        // swipe up = hard drop
+        hardDrop();
+        ly = y;
+        moved = true;
+      }
+    };
+
+    const onEnd = () => {
+      if (paused || gameOver || !running) return;
+      const dt = performance.now() - startT;
+      if (!moved && dt < 280) rotate(1); // tap = rotate
+    };
+
     boardCanvas.addEventListener(
-      "touchstart",
+      "pointerdown",
       (e) => {
-        if (!e.touches[0]) return;
-        sx = e.touches[0].clientX;
-        sy = e.touches[0].clientY;
-        moved = false;
+        if (e.pointerType === "mouse" && e.button !== 0) return;
+        boardCanvas.setPointerCapture(e.pointerId);
+        onStart(e.clientX, e.clientY);
       },
       { passive: true }
     );
     boardCanvas.addEventListener(
+      "pointermove",
+      (e) => {
+        if (!boardCanvas.hasPointerCapture?.(e.pointerId) && e.buttons === 0) return;
+        onMove(e.clientX, e.clientY);
+      },
+      { passive: true }
+    );
+    boardCanvas.addEventListener("pointerup", onEnd);
+    boardCanvas.addEventListener("pointercancel", () => {
+      moved = true;
+    });
+
+    // Prevent page scroll while touching game
+    boardWrap.addEventListener(
       "touchmove",
       (e) => {
-        if (!e.touches[0] || paused || gameOver) return;
-        const dx = e.touches[0].clientX - sx;
-        const dy = e.touches[0].clientY - sy;
-        if (Math.abs(dx) > 28 && Math.abs(dx) > Math.abs(dy)) {
-          move(dx > 0 ? 1 : -1);
-          sx = e.touches[0].clientX;
-          moved = true;
-        } else if (dy > 36 && Math.abs(dy) > Math.abs(dx)) {
-          softDrop();
-          sy = e.touches[0].clientY;
-          moved = true;
-        }
+        if (running && !paused) e.preventDefault();
       },
-      { passive: true }
+      { passive: false }
     );
-    boardCanvas.addEventListener("touchend", (e) => {
-      if (moved || paused || gameOver) return;
-      // tap = rotate
-      rotate(1);
-    });
   }
 
   // ── Init ──────────────────────────────────
@@ -905,7 +1144,7 @@
       await loadImages();
     } catch (err) {
       console.error("Asset load failed", err);
-      toast("Не удалось загрузить банки — проверь файлы assets/");
+      toast("Не удалось загрузить банки — проверь assets/");
     }
 
     $("btn-start").addEventListener("click", startGame);
@@ -915,14 +1154,16 @@
     $("btn-resume").addEventListener("click", togglePause);
 
     bindControls();
-    window.addEventListener("resize", () => {
-      if (running) resizeBoard();
-    });
-    window.addEventListener("orientationchange", () => {
-      setTimeout(() => {
-        if (running) resizeBoard();
-      }, 200);
-    });
+
+    let resizeT = 0;
+    const onResize = () => {
+      clearTimeout(resizeT);
+      resizeT = setTimeout(() => {
+        if (!gameScreen.classList.contains("hidden")) resizeBoard();
+      }, 80);
+    };
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", () => setTimeout(onResize, 200));
   }
 
   init();
